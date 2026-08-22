@@ -220,10 +220,9 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
             if (bmp == null) return null;
             // pre-scale to the exact displayed size with filtering, so the
             // ImageView never minifies (GPU bilinear minification aliases fine detail)
-            boolean fit = prefs.getBoolean("fit", false);
             float sw = (float) targetW / bmp.getWidth();
             float sh = (float) targetH / bmp.getHeight();
-            float scale = fit ? Math.min(sw, sh) : Math.max(sw, sh);
+            float scale = "fill".equals(mode()) ? Math.max(sw, sh) : Math.min(sw, sh);
             if (scale < 0.999f) {
                 Bitmap scaled = Bitmap.createScaledBitmap(bmp,
                         Math.max(1, Math.round(bmp.getWidth() * scale)),
@@ -302,9 +301,13 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         getWindow().setAttributes(lp);
     }
 
+    private String mode() { return prefs.getString("mode", "smart"); }
+
     private void applyScaleType() {
-        boolean fit = prefs.getBoolean("fit", false);
-        ImageView.ScaleType st = fit ? ImageView.ScaleType.FIT_CENTER : ImageView.ScaleType.CENTER_CROP;
+        // smart/fit files are already letterbox-shaped, fill files are exactly screen-sized,
+        // so FIT_CENTER displays everything 1:1; CENTER_CROP only matters for legacy fill files
+        ImageView.ScaleType st = "fill".equals(mode())
+                ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER;
         viewA.setScaleType(st);
         viewB.setScaleType(st);
     }
@@ -319,8 +322,12 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         if (sm != null) { try { e.putInt("syncMin", Integer.parseInt(sm.trim())); any = true; } catch (Exception ignored) {} }
         String ss = intent.getStringExtra("slideSec");
         if (ss != null) { try { e.putInt("slideSec", Integer.parseInt(ss.trim())); any = true; } catch (Exception ignored) {} }
-        String fit = intent.getStringExtra("fit");
-        if (fit != null) { e.putBoolean("fit", "true".equalsIgnoreCase(fit.trim())); any = true; }
+        String mode = intent.getStringExtra("mode");
+        if (mode != null && ("smart".equals(mode) || "fill".equals(mode) || "fit".equals(mode))) {
+            e.putString("mode", mode); any = true;
+        }
+        String fit = intent.getStringExtra("fit"); // legacy extra
+        if (fit != null) { e.putString("mode", "true".equalsIgnoreCase(fit.trim()) ? "fit" : "fill"); any = true; }
         String so = intent.getStringExtra("schedOn");
         if (so != null) { e.putBoolean("schedOn", "true".equalsIgnoreCase(so.trim())); any = true; }
         String ss2 = intent.getStringExtra("schedStart");
@@ -363,13 +370,15 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         settingsPanel.addView(fitBtn);
         fitBtn.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                prefs.edit().putBoolean("fit", !prefs.getBoolean("fit", false)).apply();
-                fitBtn.setText(fitLabel());
+                String m = mode();
+                String next = "smart".equals(m) ? "fill" : "fill".equals(m) ? "fit" : "smart";
+                prefs.edit().putString("mode", next).apply();
+                fitBtn.setText(modeLabel());
                 applyScaleType();
                 sync.syncAsync(); // mode change means new geometry — re-download
             }
         });
-        fitBtn.setText(fitLabel());
+        fitBtn.setText(modeLabel());
 
         infoText = new TextView(this);
         infoText.setTextColor(0xFFAAAAAA);
@@ -441,8 +450,11 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         root.addView(scrollWrap, lp);
     }
 
-    private String fitLabel() {
-        return prefs.getBoolean("fit", false) ? "Mode: fit (black bars)" : "Mode: fill screen (crop)";
+    private String modeLabel() {
+        String m = mode();
+        if ("fill".equals(m)) return "Display: fill screen (always crop)";
+        if ("fit".equals(m)) return "Display: fit (always whole photo)";
+        return "Display: smart (crop only when it fits well)";
     }
 
     private Button makeTimeButton(final boolean isStart) {

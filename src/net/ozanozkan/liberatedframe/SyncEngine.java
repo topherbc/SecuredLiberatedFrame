@@ -1,6 +1,7 @@
 package net.ozanozkan.liberatedframe;
 
 import android.content.SharedPreferences;
+import android.graphics.BitmapFactory;
 import android.os.Handler;
 
 import java.io.BufferedInputStream;
@@ -35,6 +36,9 @@ public class SyncEngine {
     // frame displays 1:1 with no client-side rescaling (-p = subject-aware crop)
     private static final String SUFFIX_FILL = "=w1280-h800-p";
     private static final String SUFFIX_FIT = "=w1280-h800";
+    private static final String SUFFIX_PROBE = "=w64-h40"; // tiny fetch just to learn the aspect
+    private static final float SCREEN_ASPECT = 1280f / 800f;
+    private static final float MAX_CROP_LOSS = 0.12f; // crop only if it discards <=12% of the photo
     private static final String USER_AGENT =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
     private static final int MAX_PAGE_BYTES = 8 * 1024 * 1024;
@@ -87,15 +91,18 @@ public class SyncEngine {
         if (urls.isEmpty()) throw new IllegalStateException("no photos parsed (fail-closed, keeping local)");
 
         boolean changed = false;
-        String suffix = prefs.getBoolean("fit", false) ? SUFFIX_FIT : SUFFIX_FILL;
+        String mode = prefs.getString("mode", "smart");
         Set<String> keep = new HashSet<>();
         for (String u : urls) {
-            String name = md5_16(u + suffix) + ".jpg"; // mode-aware: a mode switch re-downloads
+            String name = md5_16(u + "|" + mode) + ".jpg"; // mode-aware: a mode switch re-downloads
             keep.add(name);
             File f = new File(dir, name);
             if (!f.exists()) {
                 File tmp = new File(dir, name + ".tmp");
                 try {
+                    String suffix = "fill".equals(mode) ? SUFFIX_FILL
+                            : "fit".equals(mode) ? SUFFIX_FIT
+                            : smartSuffix(u);
                     downloadTo(u + suffix, tmp);
                     if (tmp.length() > 4096 && tmp.renameTo(f)) {
                         changed = true;
@@ -120,6 +127,27 @@ public class SyncEngine {
         prefs.edit().putLong("lastSync", System.currentTimeMillis())
                 .putInt("photoCount", keep.size()).apply();
         return changed;
+    }
+
+    /** Fill the screen only when cropping loses little of the photo; otherwise letterbox it whole. */
+    private String smartSuffix(String url) {
+        try {
+            File probe = File.createTempFile("probe", ".jpg", dir);
+            try {
+                downloadTo(url + SUFFIX_PROBE, probe);
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(probe.getAbsolutePath(), o);
+                if (o.outWidth <= 0 || o.outHeight <= 0) return SUFFIX_FIT;
+                float aspect = (float) o.outWidth / o.outHeight;
+                float loss = 1f - Math.min(aspect, SCREEN_ASPECT) / Math.max(aspect, SCREEN_ASPECT);
+                return loss <= MAX_CROP_LOSS ? SUFFIX_FILL : SUFFIX_FIT;
+            } finally {
+                probe.delete();
+            }
+        } catch (Exception e) {
+            return SUFFIX_FIT; // when unsure, show the whole photo
+        }
     }
 
     private String httpGetString(String url) throws Exception {

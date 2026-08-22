@@ -47,7 +47,8 @@ Google Photos app ──> shared album ("anyone with the link")
 
 ## Features
 
-- Sync interval, seconds-per-photo, and fill/fit display mode — all configurable on-screen
+- Sync interval, seconds-per-photo, and display mode — all configurable on-screen
+- Smart display mode (default): photos close to the screen's shape fill it edge-to-edge; photos that would lose too much to the crop (portraits, 4:3) are shown whole with black bars — decided per photo, still pixel-exact
 - Hidden settings panel (tap the screen 6 times quickly)
 - Sleep schedule: screen dark between configurable hours (native time pickers,
   cross-midnight windows like 08:00–00:30 supported); syncing continues overnight
@@ -98,7 +99,7 @@ Anything the panel can do, ADB can do (same LAN as the frame):
 ```bash
 adb shell am start -n net.ozanozkan.liberatedframe/.MainActivity \
   -e url "https://photos.app.goo.gl/XXXX" \
-  -e syncMin 5 -e slideSec 30 -e fit false \
+  -e syncMin 5 -e slideSec 30 -e mode smart \
   -e schedOn true -e schedStart 08:00 -e schedEnd 00:30
 ```
 
