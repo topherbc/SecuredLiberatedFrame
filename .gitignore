@@ -1,0 +1,12 @@
+# Signing key — NEVER publish. Anyone with it can sign updates that install
+# over the app on your frame. Back it up somewhere private instead.
+release.keystore
+
+# Build output
+out/
+obj/
+dexout/
+obj.jar
+
+# OS noise
+.DS_Store
