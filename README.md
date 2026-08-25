@@ -48,10 +48,13 @@ Google Photos app ──> shared album ("anyone with the link")
 ## Features
 
 - Sync interval, seconds-per-photo, and display mode — all configurable on-screen
-- Smart display mode (default): photos close to the screen's shape fill it edge-to-edge; photos that would lose too much to the crop (portraits, 4:3) are shown whole with black bars — decided per photo, still pixel-exact
-- Hidden settings panel (tap the screen 6 times quickly)
-- Sleep schedule: screen dark between configurable hours (native time pickers,
-  cross-midnight windows like 08:00–00:30 supported); syncing continues overnight
+- Smart display mode (default): photos close to the screen's shape fill it edge-to-edge; photos that would lose too much to the crop (portraits) are shown whole with black bars — decided per photo, still pixel-exact
+- Hidden settings panel (tap the screen twice)
+- Sleep schedule: screen truly OFF between configurable hours (native time pickers,
+  cross-midnight windows like 08:00–00:30 supported); an exact alarm turns it back on in the
+  morning. Pressing the power button at night shows photos for a 2-minute peek, then sleep
+  resumes by itself. Needs the one-time device-admin grant below; without it the screen falls
+  back to black at minimum brightness
 - Escape hatches: Wi-Fi settings, Android settings, and the stock Frameo app, with a floating
   "◀ Photos" return chip and a 10-minute auto-return safety net
 - Remote configuration over ADB (see below)
@@ -84,11 +87,13 @@ Override the default keystore password with `KEYSTORE_PASS=... ./build.sh`.
    ```bash
    adb install -r out/liberatedframe.apk
    adb shell appops set net.ozanozkan.liberatedframe SYSTEM_ALERT_WINDOW allow   # for the "◀ Photos" chip
+   adb shell dpm set-active-admin net.ozanozkan.liberatedframe/.AdminReceiver    # lets the sleep schedule turn the screen off
+   adb shell settings put global wifi_sleep_policy 2                             # keep Wi-Fi up while the screen is off
    adb shell am start -n net.ozanozkan.liberatedframe/.MainActivity
    ```
 4. In Google Photos, create an album, add photos, and share it with **link sharing** on.
    Invite family members as collaborators so they can add/remove photos.
-5. On the frame: tap 6× → paste the album link (or configure via ADB, below) → **Save & start**.
+5. On the frame: tap twice → paste the album link (or configure via ADB, below) → **Save & start**.
 6. Reboot the frame once; when Android asks which home app to use, pick
    **LiberatedFrame → Always**. From then on it survives power cuts on its own.
 
@@ -112,7 +117,8 @@ adb shell ls /storage/emulated/0/Android/data/net.ozanozkan.liberatedframe/files
 adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png
 # update the app
 ./build.sh && adb install -r out/liberatedframe.apk
-# revert the frame to stock Frameo
+# revert the frame to stock Frameo (remove the device admin first, or uninstall is refused)
+adb shell dpm remove-active-admin net.ozanozkan.liberatedframe/.AdminReceiver
 adb uninstall net.ozanozkan.liberatedframe
 ```
 

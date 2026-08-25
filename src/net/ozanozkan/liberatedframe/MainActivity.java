@@ -2,8 +2,10 @@ package net.ozanozkan.liberatedframe;
 
 import android.app.Activity;
 import android.app.AlarmManager;
+import android.app.admin.DevicePolicyManager;
 import android.app.PendingIntent;
 import android.app.TimePickerDialog;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
@@ -12,6 +14,7 @@ import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.PowerManager;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -89,7 +92,10 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         prefs = getSharedPreferences("cfg", MODE_PRIVATE);
         applyIntentConfig(getIntent());
 
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -122,7 +128,7 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
                 long now = System.currentTimeMillis();
                 if (now - lastTapTime > 2500) tapCount = 0;
                 lastTapTime = now;
-                if (++tapCount >= 6) { tapCount = 0; toggleSettings(true); }
+                if (++tapCount >= 2) { tapCount = 0; toggleSettings(true); }
             }
         });
 
@@ -135,9 +141,13 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         applyIntentConfig(intent);
     }
 
+    private long lastResumeTime = 0;
+    private static final long NIGHT_PEEK_MS = 2 * 60 * 1000; // button press at night shows photos this long
+
     @Override
     protected void onResume() {
         super.onResume();
+        lastResumeTime = System.currentTimeMillis();
         hideBackChip();
         goImmersive();
         handler.removeCallbacks(slideTick);
@@ -241,7 +251,7 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         statusText.setVisibility(showMsg ? View.VISIBLE : View.GONE);
         if (showMsg) {
             String cfg = prefs.getString("url", "").isEmpty()
-                    ? "No album configured.\nTap the screen 6 times to open settings."
+                    ? "No album configured.\nTap the screen twice to open settings."
                     : "Waiting for photos…\nlast sync: " + lastMessage;
             statusText.setText(cfg);
         }
@@ -281,24 +291,66 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
     }
 
     private void applyScheduleState() {
-        boolean awake = isDisplayTime()
+        // waking the screen at night (power button, boot) grants a photo peek, then sleep resumes
+        boolean peeking = System.currentTimeMillis() - lastResumeTime < NIGHT_PEEK_MS;
+        boolean awake = isDisplayTime() || peeking
                 || (scrollWrap != null && scrollWrap.getVisibility() == View.VISIBLE);
-        if (awake == displayAwake) return;
-        displayAwake = awake;
-        WindowManager.LayoutParams lp = getWindow().getAttributes();
-        if (awake) {
-            blackView.setVisibility(View.GONE);
-            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
-            handler.removeCallbacks(slideTick);
-            handler.post(slideTick);
-        } else {
-            blackView.setVisibility(View.VISIBLE);
-            blackView.bringToFront();
-            if (scrollWrap != null) scrollWrap.bringToFront();
-            lp.screenBrightness = 0f; // dimmest the panel allows; content is pure black
-            handler.removeCallbacks(slideTick);
+        if (awake != displayAwake) {
+            displayAwake = awake;
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            if (awake) {
+                blackView.setVisibility(View.GONE);
+                lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                handler.removeCallbacks(slideTick);
+                handler.post(slideTick);
+            } else {
+                blackView.setVisibility(View.VISIBLE);
+                blackView.bringToFront();
+                if (scrollWrap != null) scrollWrap.bringToFront();
+                lp.screenBrightness = 0f; // fallback dim; real off comes from lockNow below
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                handler.removeCallbacks(slideTick);
+            }
+            getWindow().setAttributes(lp);
         }
-        getWindow().setAttributes(lp);
+        if (!displayAwake) {
+            armWakeAlarm();     // guarantees the morning screen-on even if the process dies
+            maybeScreenOff();   // true backlight-off when device admin is granted
+        }
+    }
+
+    /** Turn the screen fully off during sleep hours, with a 60s grace after any wake/touch. */
+    private void maybeScreenOff() {
+        try {
+            if (System.currentTimeMillis() - lastResumeTime < 60000) return;
+            if (scrollWrap != null && scrollWrap.getVisibility() == View.VISIBLE) return;
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
+            ComponentName admin = new ComponentName(this, AdminReceiver.class);
+            if (pm.isInteractive() && dpm.isAdminActive(admin)) {
+                dpm.lockNow();
+            }
+        } catch (Throwable ignored) {} // no admin granted: black + dim fallback stays
+    }
+
+    private void armWakeAlarm() {
+        try {
+            if (!prefs.getBoolean("schedOn", false)) return;
+            int start = parseTime(prefs.getString("schedStart", "08:00"));
+            if (start < 0) return;
+            Calendar now = Calendar.getInstance();
+            Calendar t = (Calendar) now.clone();
+            t.set(Calendar.HOUR_OF_DAY, start / 60);
+            t.set(Calendar.MINUTE, start % 60);
+            t.set(Calendar.SECOND, 0);
+            t.set(Calendar.MILLISECOND, 0);
+            if (!t.after(now)) t.add(Calendar.DAY_OF_YEAR, 1);
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            PendingIntent pi = PendingIntent.getBroadcast(this, 8,
+                    new Intent(this, WakeReceiver.class), PendingIntent.FLAG_UPDATE_CURRENT);
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t.getTimeInMillis(), pi);
+        } catch (Throwable ignored) {}
     }
 
     private String mode() { return prefs.getString("mode", "smart"); }

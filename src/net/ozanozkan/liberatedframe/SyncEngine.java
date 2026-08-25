@@ -38,7 +38,7 @@ public class SyncEngine {
     private static final String SUFFIX_FIT = "=w1280-h800";
     private static final String SUFFIX_PROBE = "=w64-h40"; // tiny fetch just to learn the aspect
     private static final float SCREEN_ASPECT = 1280f / 800f;
-    private static final float MAX_CROP_LOSS = 0.12f; // crop only if it discards <=12% of the photo
+    private static final float MAX_CROP_LOSS = 0.20f; // crop only if it discards <=20% of the photo (fills 4:3, letterboxes portraits)
     private static final String USER_AGENT =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
     private static final int MAX_PAGE_BYTES = 8 * 1024 * 1024;
@@ -94,7 +94,7 @@ public class SyncEngine {
         String mode = prefs.getString("mode", "smart");
         Set<String> keep = new HashSet<>();
         for (String u : urls) {
-            String name = md5_16(u + "|" + mode) + ".jpg"; // mode-aware: a mode switch re-downloads
+            String name = md5_16(u + "|" + mode + "|" + MAX_CROP_LOSS) + ".jpg"; // mode+threshold aware: tuning re-downloads
             keep.add(name);
             File f = new File(dir, name);
             if (!f.exists()) {
