@@ -1,4 +1,8 @@
-# LiberatedFrame
+# SecuredLiberatedFrame
+
+> A **security-hardened fork** of *LiberatedFrame* by ozanozkan (MIT). Same core idea, with a
+> locked-down deployment, HTTPS-only sync, an encrypted SD-card photo cache, remote-config off by
+> default, and several UX additions — see [What's different in this fork](#whats-different-in-this-fork).
 
 Turn a subscription-gated **Frameo** digital photo frame into an open photo frame driven by a
 **Google Photos shared album** — no server, no accounts on the frame, no fees.
@@ -60,6 +64,33 @@ Google Photos app ──> shared album ("anyone with the link")
 - Remote configuration over ADB (see below)
 - Videos in the album appear as still poster frames (playback not implemented)
 
+## What's different in this fork
+
+Changes on top of upstream LiberatedFrame:
+
+**Security hardening**
+- **HTTPS-only sync.** `SyncEngine` refuses the initial URL and any redirect that isn't TLS, so a
+  network attacker can't downgrade the album fetch to cleartext and inject a crafted page.
+  `android:usesCleartextTraffic="false"` is set as a second layer.
+- **Remote config off by default.** The exported HOME activity no longer honors `-e url …` intent
+  extras from arbitrary callers; enable **"Allow remote config over ADB"** on-screen first. This
+  closes a local attack surface (any installed app could otherwise repoint the frame).
+- **SD-card photo cache.** Photos cache to a removable SD volume when present (for capacity), meant
+  to be run with that SD **adopted as encrypted internal storage** so the cache is encrypted and
+  app-private. See [Security model](#security-model).
+- **Signing key lives outside the repo.** `build.sh` keeps `release.keystore` at `~/.liberatedframe/`
+  by default (override with `KEYSTORE=…`), so a fork can never bundle it.
+
+**UX / features**
+- **Two-stage tap.** A double-tap reveals a bottom-left **⚙ Settings** button (auto-hides after
+  6 s); tap it to open settings, tap anywhere else to skip to the next photo.
+- **Shuffled playback.** Each app start reshuffles (fresh seed) and walks the whole library before
+  repeating — no more replaying the same opening images after a restart.
+- **Device-admin wired up.** Upstream shipped the screen-off code but never declared the receiver;
+  this fork adds the manifest `<receiver>` + `res/xml/device_admin.xml` policy and makes `build.sh`
+  compile resources, so the sleep schedule can truly power the panel off.
+- **New defaults:** 20-minute sync, 55 s per photo.
+
 ## Building
 
 Requirements: JDK 17+, Android SDK command-line tools with `build-tools;35.0.0` and
@@ -69,9 +100,10 @@ Requirements: JDK 17+, Android SDK command-line tools with `build-tools;35.0.0` 
 ./build.sh          # -> out/liberatedframe.apk
 ```
 
-A signing keystore (`release.keystore`) is generated on first build.
-**Back it up and never commit it** — updating the installed app requires the same key.
-Override the default keystore password with `KEYSTORE_PASS=... ./build.sh`.
+A signing keystore is generated on first build at **`~/.liberatedframe/release.keystore`** —
+outside the repo, so it can never be committed or bundled into a fork. Override its location with
+`KEYSTORE=/path/to/release.keystore` and its password with `KEYSTORE_PASS=...`. **Back it up** —
+updating the installed app requires the same key.
 
 ## Installing on a Frameo frame
 
@@ -99,7 +131,9 @@ Override the default keystore password with `KEYSTORE_PASS=... ./build.sh`.
 
 ## Remote configuration
 
-Anything the panel can do, ADB can do (same LAN as the frame):
+**Off by default in this fork.** Enable **"Allow remote config over ADB"** in the on-screen settings
+first; until then the app ignores the config extras below. Once enabled, anything the panel can do,
+ADB can do too:
 
 ```bash
 adb shell am start -n net.ozanozkan.liberatedframe/.MainActivity \
@@ -121,6 +155,31 @@ adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png
 adb shell dpm remove-active-admin net.ozanozkan.liberatedframe/.AdminReceiver
 adb uninstall net.ozanozkan.liberatedframe
 ```
+
+## Security model
+
+This frame runs **Android 6, which is end-of-life and receives no security patches** — the biggest
+structural risk, and one that can't be fixed in-app. The fork compensates with a locked-down
+deployment:
+
+- **USB-only administration.** Keep the frame's ADB listener off the network; admin over a USB-A→C
+  data cable (the Denver USB-C port is host-only and won't enumerate directly).
+- **Wi-Fi client isolation on.** The frame only needs outbound HTTPS to Google; isolation stops
+  other devices (including a compromised LAN peer) from reaching it. Sync is unaffected.
+- **Disable the stock Frameo app** once this is the home launcher:
+  `adb shell pm disable-user net.frameo.frame` (reverse with `pm enable`).
+- **Adopt the SD card as encrypted internal storage**, so the photo cache is encrypted at rest and
+  unreadable if the card is pulled:
+  ```bash
+  adb shell sm list-disks                     # find the disk id, e.g. disk:179,64
+  adb shell sm partition disk:179,64 private  # ERASES the card; formats it encrypted-internal
+  ```
+  Adoptable-storage support varies by frame firmware. Without adoption, a portable SD cache is
+  readable by any app with storage permission and by anyone who removes the card.
+- **Remote config stays off** except while you're actively configuring over ADB.
+
+The album itself is a **public unguessable URL** ("anyone with the link"), so the cache's
+confidentiality is defense-in-depth, not secrecy of otherwise-private photos.
 
 ## Caveats
 

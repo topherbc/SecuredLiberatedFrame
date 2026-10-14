@@ -13,6 +13,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.PowerManager;
 import android.view.Gravity;
@@ -35,6 +36,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -55,6 +57,7 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
     private Button startBtn, endBtn;
     private String schedStartVal = "08:00", schedEndVal = "00:30";
     private CheckBox schedCheck;
+    private CheckBox remoteCheck;
     private TextView infoText;
     private View blackView;
     private boolean displayAwake = true;
@@ -70,8 +73,20 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
     private int index = -1;
     private String lastMessage = "not synced yet";
 
+    // Shuffled playback: walk a random permutation of the whole library before any repeat,
+    // reshuffled each pass and each app start (fresh seed), so restarts don't replay the
+    // same opening images.
+    private final List<File> playOrder = new ArrayList<>();
+    private int playPos = -1;
+    private File lastShown = null;
+
     private int tapCount = 0;
     private long lastTapTime = 0;
+
+    private View settingsChip;
+    private final Runnable hideChipTick = new Runnable() {
+        public void run() { hideSettingsChip(); }
+    };
 
     private final Runnable slideTick = new Runnable() {
         public void run() {
@@ -120,15 +135,24 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         root.addView(statusText, sp);
 
         buildSettingsPanel();
+        buildSettingsChip();
         setContentView(root);
 
         root.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 if (scrollWrap.getVisibility() == View.VISIBLE) { toggleSettings(false); return; }
+                // While the Settings chip is showing, a tap off the chip just skips to the next photo.
+                if (chipShowing()) {
+                    hideSettingsChip();
+                    showNext();
+                    handler.removeCallbacks(slideTick);
+                    handler.postDelayed(slideTick, slideSeconds() * 1000L);
+                    return;
+                }
                 long now = System.currentTimeMillis();
                 if (now - lastTapTime > 2500) tapCount = 0;
                 lastTapTime = now;
-                if (++tapCount >= 2) { tapCount = 0; toggleSettings(true); }
+                if (++tapCount >= 2) { tapCount = 0; showSettingsChip(); }
             }
         });
 
@@ -182,7 +206,26 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
     // ---- slideshow ----
 
     private File photoDir() {
-        return new File(getExternalFilesDir(null), "photos");
+        // Prefer a removable volume (the SD card) for cache capacity. When the card is adopted
+        // as encrypted internal storage it becomes the primary volume (reported non-removable)
+        // and is used too. Fall back to primary external, then app-private internal storage.
+        File chosen = null;
+        try {
+            File[] vols = getExternalFilesDirs(null); // [0] = primary, [1+] = SD/USB when present
+            if (vols != null) {
+                for (File v : vols) {
+                    if (v == null) continue;
+                    try {
+                        if (Environment.isExternalStorageRemovable(v)) { chosen = v; break; }
+                    } catch (Throwable ignored) {}
+                }
+                if (chosen == null) {
+                    for (File v : vols) { if (v != null) { chosen = v; break; } }
+                }
+            }
+        } catch (Throwable ignored) {}
+        if (chosen == null) chosen = getFilesDir(); // last resort: internal, app-private
+        return new File(chosen, "photos");
     }
 
     private void refreshPhotoList() {
@@ -195,11 +238,34 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         if (index >= photos.size()) index = -1;
     }
 
+    /** Next photo in a shuffled pass over the whole library; reshuffles when a pass ends
+     *  or the library changes, avoiding an immediate repeat across the shuffle boundary. */
+    private File pickNext() {
+        if (photos.isEmpty()) return null;
+        boolean needNewPass = playOrder.size() != photos.size() // library changed
+                || playPos < 0                                   // first run this process
+                || playPos >= playOrder.size() - 1;              // finished the pass
+        if (needNewPass) {
+            playOrder.clear();
+            playOrder.addAll(photos);
+            Collections.shuffle(playOrder); // time-seeded: differs every app start
+            if (playOrder.size() > 1 && playOrder.get(0).equals(lastShown)) {
+                Collections.swap(playOrder, 0, playOrder.size() - 1);
+            }
+            playPos = 0;
+        } else {
+            playPos++;
+        }
+        lastShown = playOrder.get(playPos);
+        return lastShown;
+    }
+
     private void showNext() {
         if (!displayAwake) return;
         if (photos.isEmpty()) { updateStatus(); return; }
-        index = (index + 1) % photos.size();
-        Bitmap bmp = decodeForScreen(photos.get(index));
+        File next = pickNext();
+        if (next == null) { updateStatus(); return; }
+        Bitmap bmp = decodeForScreen(next);
         if (bmp == null) return;
         ImageView in = showingA ? viewB : viewA;
         ImageView out = showingA ? viewA : viewB;
@@ -213,6 +279,49 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         in.animate().alpha(1f).setDuration(900).start();
         out.animate().alpha(0f).setDuration(900).start();
         updateStatus();
+    }
+
+    // Bottom-left "Settings" button, revealed by a double-tap. Tapping it opens the
+    // settings panel; a tap anywhere else while it's showing skips to the next photo.
+    private void buildSettingsChip() {
+        Button b = new Button(this);
+        b.setText("⚙ Settings");
+        b.setAllCaps(false);
+        b.setTextColor(Color.WHITE);
+        b.setBackgroundColor(0xC0202020);
+        b.setPadding(48, 28, 48, 28);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.LEFT);
+        lp.leftMargin = 48;
+        lp.bottomMargin = 48;
+        b.setLayoutParams(lp);
+        b.setVisibility(View.GONE);
+        b.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                hideSettingsChip();
+                toggleSettings(true);
+            }
+        });
+        root.addView(b);
+        settingsChip = b;
+    }
+
+    private boolean chipShowing() {
+        return settingsChip != null && settingsChip.getVisibility() == View.VISIBLE;
+    }
+
+    private void showSettingsChip() {
+        if (settingsChip == null) return;
+        settingsChip.setVisibility(View.VISIBLE);
+        settingsChip.bringToFront();
+        handler.removeCallbacks(hideChipTick);
+        handler.postDelayed(hideChipTick, 6000); // auto-hide if ignored
+    }
+
+    private void hideSettingsChip() {
+        handler.removeCallbacks(hideChipTick);
+        if (settingsChip != null) settingsChip.setVisibility(View.GONE);
     }
 
     private Bitmap decodeForScreen(File f) {
@@ -251,7 +360,7 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
         statusText.setVisibility(showMsg ? View.VISIBLE : View.GONE);
         if (showMsg) {
             String cfg = prefs.getString("url", "").isEmpty()
-                    ? "No album configured.\nTap the screen twice to open settings."
+                    ? "No album configured.\nTap twice, then tap Settings."
                     : "Waiting for photos…\nlast sync: " + lastMessage;
             statusText.setText(cfg);
         }
@@ -259,8 +368,8 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
 
     // ---- settings ----
 
-    private int syncMinutes() { return clamp(prefs.getInt("syncMin", 5), 1, 720); }
-    private int slideSeconds() { return clamp(prefs.getInt("slideSec", 20), 3, 3600); }
+    private int syncMinutes() { return clamp(prefs.getInt("syncMin", 20), 1, 720); }
+    private int slideSeconds() { return clamp(prefs.getInt("slideSec", 55), 3, 3600); }
     private static int clamp(int v, int lo, int hi) { return Math.max(lo, Math.min(hi, v)); }
 
     // ---- sleep schedule ----
@@ -366,6 +475,10 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
 
     private void applyIntentConfig(Intent intent) {
         if (intent == null) return;
+        // Remote config is a local attack surface: MainActivity is exported (LAUNCHER/HOME),
+        // so any installed app could start it with -e url ... extras and repoint the frame.
+        // Off by default; the user enables "Allow remote config" on-screen to permit ADB setup.
+        if (!prefs.getBoolean("allowRemoteConfig", false)) return;
         SharedPreferences.Editor e = prefs.edit();
         boolean any = false;
         String url = intent.getStringExtra("url");
@@ -405,6 +518,11 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
                 android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         syncInput = addField("Sync interval (minutes)", android.text.InputType.TYPE_CLASS_NUMBER);
         slideInput = addField("Seconds per photo", android.text.InputType.TYPE_CLASS_NUMBER);
+
+        remoteCheck = new CheckBox(this);
+        remoteCheck.setText("Allow remote config over ADB (off = most secure)");
+        remoteCheck.setTextColor(Color.WHITE);
+        settingsPanel.addView(remoteCheck);
 
         schedCheck = new CheckBox(this);
         schedCheck.setText("Sleep schedule (screen dark outside these hours)");
@@ -478,6 +596,7 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
                 try { e.putInt("syncMin", Integer.parseInt(syncInput.getText().toString().trim())); } catch (Exception ignored) {}
                 try { e.putInt("slideSec", Integer.parseInt(slideInput.getText().toString().trim())); } catch (Exception ignored) {}
                 e.putBoolean("schedOn", schedCheck.isChecked());
+                e.putBoolean("allowRemoteConfig", remoteCheck.isChecked());
                 e.putString("schedStart", schedStartVal);
                 e.putString("schedEnd", schedEndVal);
                 e.apply();
@@ -556,6 +675,7 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
             syncInput.setText(String.valueOf(syncMinutes()));
             slideInput.setText(String.valueOf(slideSeconds()));
             schedCheck.setChecked(prefs.getBoolean("schedOn", false));
+            remoteCheck.setChecked(prefs.getBoolean("allowRemoteConfig", false));
             schedStartVal = prefs.getString("schedStart", "08:00");
             schedEndVal = prefs.getString("schedEnd", "00:30");
             startBtn.setText("ON at " + schedStartVal);

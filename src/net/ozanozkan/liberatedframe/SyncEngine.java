@@ -183,6 +183,10 @@ public class SyncEngine {
         // follow redirects manually so cross-host hops (goo.gl -> photos.google.com) always work
         String current = url;
         for (int hop = 0; hop < 6; hop++) {
+            // HTTPS-only: refuse the initial URL and any redirect that isn't TLS, so a
+            // network attacker can't downgrade the album fetch to cleartext and inject HTML.
+            if (!current.regionMatches(true, 0, "https://", 0, 8))
+                throw new IllegalStateException("refusing non-HTTPS URL (cleartext blocked)");
             HttpURLConnection c = (HttpURLConnection) new URL(current).openConnection();
             c.setInstanceFollowRedirects(false);
             c.setConnectTimeout(20000);
