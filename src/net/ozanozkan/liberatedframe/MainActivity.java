@@ -13,7 +13,6 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.PowerManager;
 import android.view.Gravity;
@@ -206,26 +205,10 @@ public class MainActivity extends Activity implements SyncEngine.Listener {
     // ---- slideshow ----
 
     private File photoDir() {
-        // Prefer a removable volume (the SD card) for cache capacity. When the card is adopted
-        // as encrypted internal storage it becomes the primary volume (reported non-removable)
-        // and is used too. Fall back to primary external, then app-private internal storage.
-        File chosen = null;
-        try {
-            File[] vols = getExternalFilesDirs(null); // [0] = primary, [1+] = SD/USB when present
-            if (vols != null) {
-                for (File v : vols) {
-                    if (v == null) continue;
-                    try {
-                        if (Environment.isExternalStorageRemovable(v)) { chosen = v; break; }
-                    } catch (Throwable ignored) {}
-                }
-                if (chosen == null) {
-                    for (File v : vols) { if (v != null) { chosen = v; break; } }
-                }
-            }
-        } catch (Throwable ignored) {}
-        if (chosen == null) chosen = getFilesDir(); // last resort: internal, app-private
-        return new File(chosen, "photos");
+        // Internal app-private storage: invisible to other apps and wiped on uninstall. The local
+        // store is a mirror of the album — SyncEngine prunes anything removed upstream — so there's
+        // no external cache pile to manage. External/SD storage is intentionally not used.
+        return new File(getFilesDir(), "photos");
     }
 
     private void refreshPhotoList() {

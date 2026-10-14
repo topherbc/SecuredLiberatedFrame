@@ -75,9 +75,10 @@ Changes on top of upstream LiberatedFrame:
 - **Remote config off by default.** The exported HOME activity no longer honors `-e url …` intent
   extras from arbitrary callers; enable **"Allow remote config over ADB"** on-screen first. This
   closes a local attack surface (any installed app could otherwise repoint the frame).
-- **SD-card photo cache.** Photos cache to a removable SD volume when present (for capacity), meant
-  to be run with that SD **adopted as encrypted internal storage** so the cache is encrypted and
-  app-private. See [Security model](#security-model).
+- **Internal app-private photo store.** Photos live in internal app-private storage — invisible to
+  other apps and wiped on uninstall (upstream used world-readable external storage). The store
+  mirrors the album: removing a photo upstream deletes it from the frame on the next sync, so
+  there's no external cache to manage by hand.
 - **Signing key lives outside the repo.** `build.sh` keeps `release.keystore` at `~/.liberatedframe/`
   by default (override with `KEYSTORE=…`), so a fork can never bundle it.
 
@@ -145,8 +146,8 @@ adb shell am start -n net.ozanozkan.liberatedframe/.MainActivity \
 Useful maintenance one-liners:
 
 ```bash
-# what's on the frame
-adb shell ls /storage/emulated/0/Android/data/net.ozanozkan.liberatedframe/files/photos/
+# (photo count is shown on-screen in the settings panel — the cached files are internal
+#  app-private storage and are not readable over ADB without root)
 # see the screen
 adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png
 # update the app
@@ -168,14 +169,8 @@ deployment:
   other devices (including a compromised LAN peer) from reaching it. Sync is unaffected.
 - **Disable the stock Frameo app** once this is the home launcher:
   `adb shell pm disable-user net.frameo.frame` (reverse with `pm enable`).
-- **Adopt the SD card as encrypted internal storage**, so the photo cache is encrypted at rest and
-  unreadable if the card is pulled:
-  ```bash
-  adb shell sm list-disks                     # find the disk id, e.g. disk:179,64
-  adb shell sm partition disk:179,64 private  # ERASES the card; formats it encrypted-internal
-  ```
-  Adoptable-storage support varies by frame firmware. Without adoption, a portable SD cache is
-  readable by any app with storage permission and by anyone who removes the card.
+- **Photos live in internal app-private storage** (not external/SD), so other apps can't read the
+  cached images and they're wiped if the app is uninstalled.
 - **Remote config stays off** except while you're actively configuring over ADB.
 
 The album itself is a **public unguessable URL** ("anyone with the link"), so the cache's
